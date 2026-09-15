@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 void main() => runApp(const PriceApp());
 
@@ -91,6 +92,20 @@ class _HomePageState extends State<HomePage> {
     } finally { if (mounted) setState(() => loading = false); }
   }
 
+  Future<void> searchWithoutApi() async {
+    if (query.text.trim().isEmpty) return;
+    if (zip.text.trim().isEmpty) {
+      setState(() => error = 'Escribe y guarda tu ZIP code antes de buscar precios locales.');
+      return;
+    }
+    final p = await SharedPreferences.getInstance();
+    await p.setString('zip', zip.text.trim());
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => VisibleSearchPage(
+      product: query.text.trim(), zipCode: zip.text.trim(), stores: [...stores, ...customStores],
+    )));
+  }
+
   Future<void> openStore(Store s) async {
     final uri = Uri.parse('${s.url}${Uri.encodeComponent(query.text.trim())}');
     await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -125,6 +140,10 @@ class _HomePageState extends State<HomePage> {
       Padding(padding:const EdgeInsets.all(16), child:Column(crossAxisAlignment:CrossAxisAlignment.stretch, children:[
         const Text('Encuentra el mejor precio', style:TextStyle(fontSize:26,fontWeight:FontWeight.bold)),
         const SizedBox(height:12), TextField(controller:query, onSubmitted:(_)=>search(), decoration:InputDecoration(prefixIcon:const Icon(Icons.search), hintText:'Producto, marca o modelo', suffixIcon:IconButton(icon:const Icon(Icons.arrow_forward),onPressed:search), border:const OutlineInputBorder())),
+        const SizedBox(height:10), Row(children:[
+          Expanded(child:TextField(controller:zip,keyboardType:TextInputType.number,decoration:const InputDecoration(prefixIcon:Icon(Icons.location_on_outlined),labelText:'ZIP code',border:OutlineInputBorder()))),
+          const SizedBox(width:10),FilledButton.icon(onPressed:searchWithoutApi,icon:const Icon(Icons.public),label:const Text('Buscar sin API')),
+        ]),
         const SizedBox(height:10), SizedBox(height:42, child:ListView(scrollDirection:Axis.horizontal, children:[...stores,...customStores].map((s)=>Padding(padding:const EdgeInsets.only(right:8), child:ActionChip(avatar:const Icon(Icons.storefront,size:18),label:Text(s.name),onPressed:()=>openStore(s)))).toList())),
       ])),
       if(loading) const LinearProgressIndicator(),
@@ -135,6 +154,92 @@ class _HomePageState extends State<HomePage> {
         onTap:o.link.isEmpty?null:()=>launchUrl(Uri.parse(o.link),mode:LaunchMode.externalApplication),
       ));})),
     ])),
+  );
+}
+
+class VisibleSearchPage extends StatefulWidget {
+  final String product, zipCode;
+  final List<Store> stores;
+  const VisibleSearchPage({super.key,required this.product,required this.zipCode,required this.stores});
+  @override State<VisibleSearchPage> createState()=>_VisibleSearchPageState();
+}
+
+class _VisibleSearchPageState extends State<VisibleSearchPage> {
+  late final WebViewController controller;
+  int index=0;
+  bool pageLoading=true;
+  String status='Cargando tienda…';
+  final Map<String,double> captured={};
+
+  Store get current=>widget.stores[index];
+  Uri get currentUri=>Uri.parse('${current.url}${Uri.encodeComponent(widget.product)}');
+
+  @override void initState(){
+    super.initState();
+    controller=WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageStarted:(_){if(mounted)setState((){pageLoading=true;status='Buscando en ${current.name}…';});},
+        onPageFinished:(_) async {if(mounted)setState(()=>pageLoading=false);await _applyZip();await _capture(automatic:true);},
+        onWebResourceError:(e){if(mounted)setState(()=>status='No se pudo cargar: ${e.description}');},
+      ))
+      ..loadRequest(currentUri);
+  }
+
+  Future<void> _applyZip() async {
+    final z=jsonEncode(widget.zipCode);
+    await controller.runJavaScript('''
+      (()=>{const z=$z; const el=document.querySelector('input[autocomplete="postal-code"],input[name*="zip" i],input[id*="zip" i],input[placeholder*="ZIP" i]');
+      if(el){el.focus();el.value=z;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}})();
+    ''');
+  }
+
+  Future<void> _capture({bool automatic=false}) async {
+    try{
+      final value=await controller.runJavaScriptReturningResult(r'''
+        (()=>{let price=null,title=document.title||'';
+          const meta=document.querySelector('meta[property="product:price:amount"],meta[itemprop="price"],meta[property="og:price:amount"]');
+          if(meta) price=meta.content;
+          if(!price){for(const s of document.querySelectorAll('script[type="application/ld+json"]')){try{const j=JSON.parse(s.textContent);const a=Array.isArray(j)?j:[j];for(const x of a){const o=x&&x.offers;const p=Array.isArray(o)?o[0]?.price:o?.price;if(p){price=p;title=x.name||title;break;}}}catch(_){ }if(price)break;}}
+          if(!price){const el=document.querySelector('[itemprop="price"],[data-testid*="price" i],[class*="price" i]');if(el)price=el.getAttribute('content')||el.textContent;}
+          const m=String(price||'').replace(/,/g,'').match(/\d+(?:\.\d{1,2})?/);return JSON.stringify({price:m?Number(m[0]):null,title});
+        })();
+      ''');
+      final data=jsonDecode(value.toString()) as Map<String,dynamic>;
+      final p=(data['price'] as num?)?.toDouble();
+      if(p!=null&&p>0){setState((){captured[current.name]=p;status='Precio detectado: \$${p.toStringAsFixed(2)}';});}
+      else if(!automatic)setState(()=>status='No pude reconocer un precio. Abre el producto correcto y vuelve a pulsar Capturar.');
+      else setState(()=>status='Selecciona el producto correcto o resuelve el aviso de la tienda.');
+    }catch(_){if(!automatic)setState(()=>status='Esta página no permitió leer el precio automáticamente.');}
+  }
+
+  Future<void> _next() async {
+    if(index>=widget.stores.length-1){_showResults();return;}
+    setState((){index++;pageLoading=true;status='Cargando ${current.name}…';});
+    await controller.loadRequest(currentUri);
+  }
+
+  void _showResults(){
+    final list=captured.entries.toList()..sort((a,b)=>a.value.compareTo(b.value));
+    showModalBottomSheet(context:context,isScrollControlled:true,builder:(c)=>SafeArea(child:Padding(padding:const EdgeInsets.all(20),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+      const Text('Precios encontrados',style:TextStyle(fontSize:22,fontWeight:FontWeight.bold)),const SizedBox(height:12),
+      if(list.isEmpty)const Text('Todavía no se ha capturado ningún precio.'),
+      ...list.map((e)=>ListTile(leading:const Icon(Icons.store),title:Text(e.key),trailing:Text('\$${e.value.toStringAsFixed(2)}',style:const TextStyle(fontWeight:FontWeight.bold)))),
+      FilledButton(onPressed:()=>Navigator.pop(c),child:const Text('Continuar')),
+    ]))));
+  }
+
+  @override Widget build(BuildContext context)=>Scaffold(
+    appBar:AppBar(title:Text('${current.name} (${index+1}/${widget.stores.length})'),actions:[IconButton(onPressed:_showResults,icon:const Icon(Icons.price_check))]),
+    body:Column(children:[
+      if(pageLoading)const LinearProgressIndicator(),
+      Container(width:double.infinity,color:Theme.of(context).colorScheme.surfaceContainerHighest,padding:const EdgeInsets.symmetric(horizontal:12,vertical:8),child:Text('ZIP ${widget.zipCode} · $status',maxLines:2)),
+      Expanded(child:WebViewWidget(controller:controller)),
+      SafeArea(top:false,child:Padding(padding:const EdgeInsets.all(10),child:Row(children:[
+        Expanded(child:OutlinedButton.icon(onPressed:()=>_capture(),icon:const Icon(Icons.add_shopping_cart),label:const Text('Capturar precio'))),const SizedBox(width:8),
+        Expanded(child:FilledButton.icon(onPressed:_next,icon:Icon(index==widget.stores.length-1?Icons.done:Icons.navigate_next),label:Text(index==widget.stores.length-1?'Ver resultados':'Siguiente tienda'))),
+      ]))),
+    ]),
   );
 }
 
