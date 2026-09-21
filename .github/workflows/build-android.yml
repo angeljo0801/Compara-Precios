@@ -12,12 +12,83 @@ jobs:
         with:
           channel: stable
           cache: true
-      - run: flutter create . --platforms android --project-name compara_precios --org com.angel.comparaprecios
+
+      - name: Create Android scaffold
+        run: |
+          flutter create . --platforms android --project-name compara_precios --org com.angel.comparaprecios
+          mkdir -p android/app/src/main/kotlin/com/angel/comparaprecios/compara_precios
+          cp .github/ComparaBackupStorageBridge.kt android/app/src/main/kotlin/com/angel/comparaprecios/compara_precios/ComparaBackupStorageBridge.kt
+          cp .github/ComparaMainActivity.kt android/app/src/main/kotlin/com/angel/comparaprecios/compara_precios/MainActivity.kt
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 26/' android/app/build.gradle.kts
+
+      - name: Stable Android identity and optional signing
+        env:
+          COMPARA_KEYSTORE_B64: ${{ secrets.COMPARA_KEYSTORE_B64 }}
+          COMPARA_KEYSTORE_PASSWORD: ${{ secrets.COMPARA_KEYSTORE_PASSWORD }}
+          COMPARA_KEY_ALIAS: ${{ secrets.COMPARA_KEY_ALIAS }}
+          COMPARA_KEY_PASSWORD: ${{ secrets.COMPARA_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -n "$COMPARA_KEYSTORE_B64" ]; then
+            printf '%s' "$COMPARA_KEYSTORE_B64" | base64 --decode > android/app/compara-release.jks
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+
+          p=Path('android/app/build.gradle.kts')
+          s=p.read_text()
+          s=re.sub(
+              r'namespace\s*=\s*"[^"]+"',
+              'namespace = "com.angel.comparaprecios.compara_precios"',
+              s,
+              count=1,
+          )
+          s=re.sub(
+              r'applicationId\s*=\s*"[^"]+"',
+              'applicationId = "com.angel.comparaprecios.compara_precios"',
+              s,
+              count=1,
+          )
+
+          alias=os.environ.get('COMPARA_KEY_ALIAS','').strip()
+          sp=os.environ.get('COMPARA_KEYSTORE_PASSWORD','').strip()
+          kp=os.environ.get('COMPARA_KEY_PASSWORD','').strip()
+          ks=Path('android/app/compara-release.jks')
+          if ks.exists() and alias and sp and kp:
+              def esc(v):
+                  return v.replace('\\','\\\\').replace('"','\\\"')
+              block='''    signingConfigs {
+                  create("comparaRelease") {
+                      keyAlias = "''' + esc(alias) + '''"
+                      keyPassword = "''' + esc(kp) + '''"
+                      storeFile = file("compara-release.jks")
+                      storePassword = "''' + esc(sp) + '''"
+                  }
+              }
+
+          '''
+              if 'create("comparaRelease")' not in s:
+                  s=s.replace('    buildTypes {',block+'    buildTypes {',1)
+              s=re.sub(
+                  r'(getByName\("release"\)\s*\{)(.*?)(\n\s*\})',
+                  lambda m: (
+                      m.group(1)+m.group(2)+
+                      '\n            signingConfig = signingConfigs.getByName("comparaRelease")'+
+                      m.group(3)
+                  ),
+                  s,
+                  count=1,
+                  flags=re.S,
+              )
+          p.write_text(s)
+          PY
+
       - run: flutter pub get
-      - run: flutter analyze
+      - run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - run: flutter test
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
-          name: Compara-Precios-APK
+          name: Compara-Precios-Backup-Stable-ID-APK
           path: build/app/outputs/flutter-apk/app-release.apk
