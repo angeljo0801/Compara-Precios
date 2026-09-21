@@ -207,9 +207,12 @@ class _VisibleSearchPageState extends State<VisibleSearchPage> {
       ''');
       final data=jsonDecode(value.toString()) as Map<String,dynamic>;
       final p=(data['price'] as num?)?.toDouble();
-      if(p!=null&&p>0){setState((){captured[current.name]=p;status='Precio detectado: \$${p.toStringAsFixed(2)}';});}
-      else if(!automatic)setState(()=>status='No pude reconocer un precio. Abre el producto correcto y vuelve a pulsar Capturar.');
-      else setState(()=>status='Selecciona el producto correcto o resuelve el aviso de la tienda.');
+      if(p!=null&&p>0){setState((){captured[current.name]=p;status='Precio detectado: \${p.toStringAsFixed(2)}';});}
+      else if(!automatic){
+        setState(()=>status='No pude reconocer un precio. Abre el producto correcto y vuelve a pulsar Capturar.');
+      } else {
+        setState(()=>status='Selecciona el producto correcto o resuelve el aviso de la tienda.');
+      }
     }catch(_){if(!automatic)setState(()=>status='Esta página no permitió leer el precio automáticamente.');}
   }
 
