@@ -4,8 +4,15 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'backup_service.dart';
 
-void main() => runApp(const PriceApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const PriceApp());
+  try {
+    await ComparaBackupService.autoBackupIfDue();
+  } catch (_) {}
+}
 
 class PriceApp extends StatelessWidget {
   const PriceApp({super.key});
@@ -134,7 +141,17 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar:AppBar(title:const Text('Compara Precios'), actions:[IconButton(onPressed:settings, icon:const Icon(Icons.settings_outlined))]),
+    appBar:AppBar(title:const Text('Compara Precios'), actions:[
+      IconButton(
+        tooltip:'Copias de seguridad',
+        onPressed:()=>Navigator.push(
+          context,
+          MaterialPageRoute(builder:(_)=>const ComparaBackupPage()),
+        ),
+        icon:const Icon(Icons.backup_outlined),
+      ),
+      IconButton(onPressed:settings, icon:const Icon(Icons.settings_outlined)),
+    ]),
     floatingActionButton:FloatingActionButton.extended(onPressed:addStore, icon:const Icon(Icons.add_business), label:const Text('Añadir tienda')),
     body:SafeArea(child:Column(children:[
       Padding(padding:const EdgeInsets.all(16), child:Column(crossAxisAlignment:CrossAxisAlignment.stretch, children:[
